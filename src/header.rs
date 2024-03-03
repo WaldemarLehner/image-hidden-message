@@ -1,14 +1,8 @@
-use std::{
-    mem::size_of,
-    ops::{Shl, Shr},
-};
+use std::mem::size_of;
 
 use bincode::{config, error::EncodeError, Decode, Encode};
-use clap::builder::Str;
-use crc::{Crc, Digest, CRC_32_CKSUM};
-use image::{
-    ColorType, DynamicImage, EncodableLayout, GenericImage, GenericImageView, Pixel, Rgba,
-};
+use crc::{Crc, CRC_32_CKSUM};
+use image::{ColorType, EncodableLayout};
 use rand::{thread_rng, Rng};
 
 #[derive(Encode, Decode, PartialEq, Debug, Clone, Copy)]
@@ -39,12 +33,12 @@ pub(crate) enum VersionedHeader {
 #[derive(Encode, Decode, PartialEq, Debug, Clone)]
 pub(crate) struct HeaderRaw {
     /// Should be 0x42. Here so we can  
-    magic: u8,
+    pub(crate) magic: u8,
     /// How many bytes (=pixels*8) are used for the data segment
-    header_len: u16,
-    data: Vec<u8>,
+    pub(crate) header_len: u16,
+    pub(crate) data: Vec<u8>,
     /// Checksum of the header and data
-    crc: u32,
+    pub(crate) crc: u32,
 }
 
 impl TryInto<HeaderRaw> for VersionedHeader {

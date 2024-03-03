@@ -1,22 +1,19 @@
 mod buffer_modify;
 mod header;
 
-use bincode::config;
 use clap::{Parser, Subcommand};
 use colored::*;
 use core::panic;
-use image::{DynamicImage, GenericImageView, ImageBuffer, ImageOutputFormat};
+use header::VersionedHeader;
+use image::GenericImageView;
 use std::{
-    borrow::BorrowMut,
-    fs::{self, File},
-    io::{self, stdout, BufWriter, Cursor, Read, Stdout, Write},
-    os::fd::{AsFd, AsRawFd},
+    fs::File,
+    io::{self, stdout, BufWriter, Read, Write},
     path::Path,
+    process::exit,
 };
 
-use crate::buffer_modify::{
-    convert_dynamic_image_to_png_image, PngImage, ReadImageBinary, WriteImageBinary,
-};
+use crate::buffer_modify::{convert_dynamic_image_to_png_image, PngImage};
 use crate::header::{generate_v1_header, HeaderRaw};
 
 #[derive(Parser)]
@@ -59,9 +56,9 @@ fn main() {
     let cli = Cli {
         verbose: false,
         command: Commands::Encode {
-            source: "Test".to_string(),
-            message: None,
-            out: None,
+            source: "./source.png".to_string(),
+            message: Some("Such Message, much wow".to_string()),
+            out: Some("source2.png".to_string()),
         },
     };
     let cli = Cli::parse();
@@ -130,10 +127,21 @@ fn main() {
             // Define a Header
             let header = generate_v1_header(pixel_count, buf_len as u64, color_space).unwrap();
             let header_binary = {
-                let as_raw_header: HeaderRaw = header.try_into().unwrap();
+                let mut as_raw_header: HeaderRaw = header.try_into().unwrap();
 
-                let as_binary_data =
-                    bincode::encode_to_vec(as_raw_header, config::standard()).unwrap();
+                let mut as_binary_data = Vec::new();
+                // Magic
+                as_binary_data.push(as_raw_header.magic);
+                // Header Len
+                as_binary_data.push((as_raw_header.header_len >> 8 & 0xFF) as u8);
+                as_binary_data.push((as_raw_header.header_len & 0xFF) as u8);
+                // Data
+                as_binary_data.append(&mut as_raw_header.data);
+                // CRC
+                for i in 0..4 {
+                    as_binary_data.push((as_raw_header.crc >> ((3 - i) * 8) & 0xFF) as u8)
+                }
+                //
                 as_binary_data
             };
 
@@ -150,31 +158,112 @@ fn main() {
                 },
             };
 
-            image.write_data_with_mask(&header_binary, write_mask, 0);
+            image.write_data_with_mask(&header_binary, 0b1u64 << 63, 0);
             image.write_data_with_mask(&message_buf, write_mask, start_offset as usize);
 
-            let data = image.save_to_png_buffer();
+            let mut data = image.save_to_png_buffer().unwrap();
+
+            let out = match out {
+                Some(x) => {
+                    if x == "-" {
+                        None
+                    } else {
+                        Some(x)
+                    }
+                }
+                None => None,
+            };
+
+            eprint!("len: {}", data.len());
+
+            match out {
+                None => stdout().write_all(&mut data).unwrap(),
+                Some(path) => {
+                    let file = File::create(path).unwrap();
+                    let mut writer = BufWriter::new(file);
+                    writer.write_all(&mut data).unwrap();
+                }
+            }
+
+            eprintln!("...done")
         }
-        Commands::Decode { source } => {}
+        Commands::Decode { source } => {
+            let mut image = (match source {
+                Some(path) => {
+                    let source_path = Path::new(path.as_str());
+
+                    if !source_path.exists() {
+                        eprintln!("Provided path {} does not exist", path.yellow());
+                        panic!("Path does not exist")
+                    }
+                    image::open(path)
+                },
+                None => {
+                    let mut message_buf = Vec::new();
+                    eprintln!("Waiting for stdin to finish. If you are stuck here, you forgot to pipe a PNG file. You can fix this by");
+                    eprintln!("- Piping a PNG file, e.g. cat imgWithSecret.png | ...");
+                    eprintln!("Alternatively, provide the source via the --source option");
+                    eprintln!("Ctrl-C to abort.");
+                    io::stdin()
+                        .read_to_end(&mut message_buf)
+                        .map_err(|err| format!("{}", err.to_string().red()))
+                        .unwrap();
+                    image::load_from_memory_with_format(&message_buf, image::ImageFormat::Png)
+                }
+            }).map_err(|x| x.to_string()).unwrap();
+
+            let image: &mut dyn PngImage = convert_dynamic_image_to_png_image(&mut image).unwrap();
+
+            // Try get the header
+            // First read the first 3 bytes. They contain the magic and length
+            let partial_header = image.read_data_with_mask(0b1u64 << 63, 0, 3);
+            if partial_header[0] != 0x42 {
+                eprintln!(
+                    "Tried to find a header in file. Magic was {:#01x}, not 0x42",
+                    partial_header[0]
+                );
+                exit(1);
+            }
+
+            let data_length =
+                (((partial_header[1] as u16) << 8) | (partial_header[2] as u16)) as usize;
+
+            let full_header = image.read_data_with_mask(0b1u64 << 63, 0, 3);
+            let raw_payload: &[u8] = &full_header[3..3 + data_length];
+            let raw_crc: &[u8] = &full_header[data_length + 4..data_length + 4 + 2];
+
+            let crc = (raw_crc[0] as u32) << 24
+                | (raw_crc[1] as u32) << 16
+                | (raw_crc[2] as u32) << 8
+                | (raw_crc[3] as u32);
+
+            let raw_header = HeaderRaw {
+                magic: 0x42,
+                header_len: data_length as u16,
+                data: Vec::from(raw_payload),
+                crc,
+            };
+
+            let header: VersionedHeader = raw_header.try_into().unwrap();
+
+            let payload = match header {
+                VersionedHeader::V1 {
+                    stuffing_opts,
+                    data_mask,
+                    data_len,
+                } => {
+                    let start_offset = match stuffing_opts {
+                        header::V1DataStuffingOptions::None { start_offset } => start_offset,
+                    };
+
+                    image.read_data_with_mask(data_mask, start_offset as usize, data_len as usize)
+                }
+            };
+
+            stdout().write(&payload).unwrap();
+        }
         Commands::Stat {} => {
             println!("not implemented")
         }
     }
-}
-
-fn write_to_stdout(image: image::DynamicImage) -> () {
-    let mut cursor = Cursor::new(Vec::new());
-    {
-        let mut writer = BufWriter::new(&mut cursor);
-        image.write_to(&mut writer, ImageOutputFormat::Png);
-    }
-    let mut result_vec: Vec<u8> = Vec::new();
-    cursor.read_to_end(&mut result_vec);
-    stdout().write(&result_vec);
-}
-
-fn write_to_file(image: image::DynamicImage, path: &str) -> () {
-    let file = File::create(path).unwrap();
-    let mut writer = BufWriter::new(file);
-    image.write_to(&mut writer, ImageOutputFormat::Png);
 }
