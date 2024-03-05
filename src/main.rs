@@ -228,9 +228,9 @@ fn main() {
             let data_length =
                 (((partial_header[1] as u16) << 8) | (partial_header[2] as u16)) as usize;
 
-            let full_header = image.read_data_with_mask(0b1u64 << 63, 0, 3);
+            let full_header = image.read_data_with_mask(0b1u64 << 63, 0, 3 + data_length + 4);
             let raw_payload: &[u8] = &full_header[3..3 + data_length];
-            let raw_crc: &[u8] = &full_header[data_length + 4..data_length + 4 + 2];
+            let raw_crc: &[u8] = &full_header[data_length + 3..data_length + 3 + 4];
 
             let crc = (raw_crc[0] as u32) << 24
                 | (raw_crc[1] as u32) << 16

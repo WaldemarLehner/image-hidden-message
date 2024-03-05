@@ -88,36 +88,44 @@ impl TryFrom<HeaderRaw> for VersionedHeader {
 ///
 fn calculate_bit_mask(bits_needed_per_pixel: u8, color_type: ColorType) -> u64 {
     let bit_count_on_all_channels = bits_needed_per_pixel / color_type.channel_count();
-    let mut data_bits_per_channel =
-        vec![bit_count_on_all_channels; color_type.channel_count() as usize];
+    let mut data_bits_per_channel: Vec<usize> =
+        vec![bit_count_on_all_channels as usize; color_type.channel_count() as usize];
 
     let remainder = (bits_needed_per_pixel % color_type.channel_count()) as usize;
     for i in 0..remainder {
         data_bits_per_channel[i] += 1;
     }
 
-    while data_bits_per_channel.len() < 4 {
+    while data_bits_per_channel.len() < color_type.channel_count() as usize {
         data_bits_per_channel.insert(0, 0) // Right-Pad with empty data
     }
 
     // Finally, build the u64
-    let bits_per_channel = (color_type.bits_per_pixel() / color_type.channel_count() as u16) as u8;
+    let bits_per_channel =
+        (color_type.bits_per_pixel() / color_type.channel_count() as u16) as usize;
+    let bytes_per_channel = (color_type.bytes_per_pixel() / color_type.channel_count()) as usize;
 
-    let mut return_mask = 0u64;
+    let mut return_vec: Vec<u8> = Vec::new();
 
     for bits_for_current_channel in data_bits_per_channel {
-        let empty_mask_bits = bits_per_channel - bits_for_current_channel;
-        return_mask <<= empty_mask_bits;
-        for _ in 0..bits_for_current_channel {
-            return_mask <<= 1;
-            return_mask |= 1;
+        let mut vec_for_channel = vec![0u8; bytes_per_channel as usize];
+
+        let clear_bits_count = (bits_per_channel - bits_for_current_channel) as usize;
+
+        for i in clear_bits_count..bits_per_channel {
+            vec_for_channel[i / 8] |= 0b1u8 << 7 >> i % 8;
         }
+
+        return_vec.append(&mut vec_for_channel);
     }
 
-    // Now shift over the "unused" bits
-    return_mask <<= 64 - color_type.channel_count() * bits_per_channel;
+    let mut return_data: u64 = 0;
 
-    return_mask
+    for i in 0..return_vec.len() {
+        return_data |= (return_vec[i] as u64) << 64 - 8 >> i * 8;
+    }
+
+    return_data
 }
 
 pub(crate) fn generate_v1_header(
@@ -157,8 +165,6 @@ pub(crate) fn generate_v1_header(
 #[cfg(test)]
 mod tests {
 
-    use crate::buffer_modify::{unvectorize_bit_mask, vectorize_bit_mask};
-
     use super::*;
     use pretty_assertions::assert_eq;
 
@@ -188,18 +194,6 @@ mod tests {
         assert_eq!(
             format!("{:#01x}", response),
             format!("{:#01x}", 0x03_01_01_01__00_00_00_00u64)
-        )
-    }
-
-    #[test]
-    fn vectorize_and_unvectorize_bit_mask() {
-        let bitmask = 0x12_34_56_78_90_AB_CD_EFu64;
-        let transform = vectorize_bit_mask(bitmask);
-
-        let back_transform = unvectorize_bit_mask(transform);
-        assert_eq!(
-            format!("{:#01x}", bitmask),
-            format!("{:#01x}", back_transform)
         )
     }
 
