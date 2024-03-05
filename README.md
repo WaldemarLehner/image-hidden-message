@@ -28,7 +28,7 @@ cat imageWithMessage.png | image-hidden-message > hiddenPayload
 You can try to decode the image from above!
 
 ```sh
-curl todo | image-hidden-message > message.txt
+curl https://raw.githubusercontent.com/WaldemarLehner/image-hidden-message/main/README-source/exampleImageRfcData.png | image-hidden-message > message.txt
 ```
 
 ## Build
