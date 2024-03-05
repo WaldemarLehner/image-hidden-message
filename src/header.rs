@@ -5,6 +5,8 @@ use crc::{Crc, CRC_32_CKSUM};
 use image::{ColorType, EncodableLayout};
 use rand::{thread_rng, Rng};
 
+use crate::buffer_modify::PngImage;
+
 #[derive(Encode, Decode, PartialEq, Debug, Clone, Copy)]
 pub(crate) enum V1DataStuffingOptions {
     None {
@@ -160,6 +162,39 @@ pub(crate) fn generate_v1_header(
     };
 
     Ok(header)
+}
+
+pub(crate) fn try_get_header(image: &mut dyn PngImage) -> Result<VersionedHeader, String> {
+    // Try get the header
+    // First read the first 3 bytes. They contain the magic and length
+    let partial_header = image.read_data_with_mask(0b1u64 << 63 >> 7, 0, 3);
+    if partial_header[0] != 0x42 {
+        let error = format!(
+            "Tried to find a header in file. Magic was {:#01x}, not 0x42",
+            partial_header[0]
+        );
+        return Err(error);
+    }
+
+    let data_length = (((partial_header[1] as u16) << 8) | (partial_header[2] as u16)) as usize;
+
+    let full_header = image.read_data_with_mask(0b1u64 << 63 >> 7, 0, 3 + data_length + 4);
+    let raw_payload: &[u8] = &full_header[3..3 + data_length];
+    let raw_crc: &[u8] = &full_header[data_length + 3..data_length + 3 + 4];
+
+    let crc = (raw_crc[0] as u32) << 24
+        | (raw_crc[1] as u32) << 16
+        | (raw_crc[2] as u32) << 8
+        | (raw_crc[3] as u32);
+
+    let raw_header = HeaderRaw {
+        magic: 0x42,
+        header_len: data_length as u16,
+        data: Vec::from(raw_payload),
+        crc,
+    };
+
+    raw_header.try_into()
 }
 
 #[cfg(test)]

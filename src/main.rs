@@ -4,7 +4,7 @@ mod header;
 use clap::{Parser, Subcommand};
 use colored::*;
 use core::panic;
-use header::VersionedHeader;
+use header::{try_get_header, VersionedHeader};
 use image::GenericImageView;
 use std::{
     fs::File,
@@ -53,14 +53,6 @@ enum Commands {
 }
 
 fn main() {
-    let cli = Cli {
-        verbose: false,
-        command: Commands::Encode {
-            source: "./source.png".to_string(),
-            message: Some("Such Message, much wow".to_string()),
-            out: Some("source2.png".to_string()),
-        },
-    };
     let cli = Cli::parse();
 
     match cli.command {
@@ -158,7 +150,7 @@ fn main() {
                 },
             };
 
-            image.write_data_with_mask(&header_binary, 0b1u64 << 63, 0);
+            image.write_data_with_mask(&header_binary, 0b1u64 << 63 >> 7, 0);
             image.write_data_with_mask(&message_buf, write_mask, start_offset as usize);
 
             let mut data = image.save_to_png_buffer().unwrap();
@@ -214,37 +206,13 @@ fn main() {
 
             let image: &mut dyn PngImage = convert_dynamic_image_to_png_image(&mut image).unwrap();
 
-            // Try get the header
-            // First read the first 3 bytes. They contain the magic and length
-            let partial_header = image.read_data_with_mask(0b1u64 << 63, 0, 3);
-            if partial_header[0] != 0x42 {
-                eprintln!(
-                    "Tried to find a header in file. Magic was {:#01x}, not 0x42",
-                    partial_header[0]
-                );
-                exit(1);
-            }
-
-            let data_length =
-                (((partial_header[1] as u16) << 8) | (partial_header[2] as u16)) as usize;
-
-            let full_header = image.read_data_with_mask(0b1u64 << 63, 0, 3 + data_length + 4);
-            let raw_payload: &[u8] = &full_header[3..3 + data_length];
-            let raw_crc: &[u8] = &full_header[data_length + 3..data_length + 3 + 4];
-
-            let crc = (raw_crc[0] as u32) << 24
-                | (raw_crc[1] as u32) << 16
-                | (raw_crc[2] as u32) << 8
-                | (raw_crc[3] as u32);
-
-            let raw_header = HeaderRaw {
-                magic: 0x42,
-                header_len: data_length as u16,
-                data: Vec::from(raw_payload),
-                crc,
+            let header = match try_get_header(image) {
+                Ok(val) => val,
+                Err(err) => {
+                    eprintln!("Failed to parse Header: {}", err);
+                    exit(1);
+                }
             };
-
-            let header: VersionedHeader = raw_header.try_into().unwrap();
 
             let payload = match header {
                 VersionedHeader::V1 {
@@ -263,7 +231,43 @@ fn main() {
             stdout().write(&payload).unwrap();
         }
         Commands::Stat {} => {
-            println!("not implemented")
+            let mut image = {
+                let mut message_buf = Vec::new();
+                eprintln!("Waiting for stdin to finish. If you are stuck here, you forgot to pipe a PNG file. You can fix this by");
+                eprintln!("- Piping a PNG file, e.g. cat imgWithSecret.png | ...");
+                eprintln!("Ctrl-C to abort.");
+                io::stdin()
+                    .read_to_end(&mut message_buf)
+                    .map_err(|err| format!("{}", err.to_string().red()))
+                    .unwrap();
+                image::load_from_memory_with_format(&message_buf, image::ImageFormat::Png).unwrap()
+            };
+            let image: &mut dyn PngImage = convert_dynamic_image_to_png_image(&mut image).unwrap();
+
+            match try_get_header(image) {
+                Ok(val) => match val {
+                    VersionedHeader::V1 {
+                        stuffing_opts,
+                        data_mask,
+                        data_len,
+                    } => {
+                        eprintln!("--------------------------");
+                        println!("Success: {}", "yes".green());
+                        match stuffing_opts {
+                            header::V1DataStuffingOptions::None { start_offset } => {
+                                println!("Pixel Offset: {}", start_offset)
+                            }
+                        };
+                        println!("Byte Length: {}", data_len);
+                        println!("Data Mask: {:#066b}", data_mask);
+                        println!("         :  |0      |8      |16     |24     |32     |40     |48     |56     |64");
+                    }
+                },
+                Err(err) => {
+                    println!("Success: {}", "no".red());
+                    println!("Reason: {}", err.italic());
+                }
+            };
         }
     }
 }
