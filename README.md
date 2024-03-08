@@ -9,6 +9,17 @@ The right picture however has the HTTP/1.0 RFC, encoded as a hidden message, ins
 | ------------------------------------------- | -------------------------------------------- |
 | ![](./README-source/exampleImageNoData.png) | ![](./README-source/exampleImageRfcData.png) |
 
+## Install
+
+```sh
+cargo install --git https://github.com/WaldemarLehner/image-hidden-message
+```
+
+You might need to add `~/.cargo/bin/` to `$PATH`.
+Once done, you can call `image-hidden-message` from the terminal.
+
+Alternatively, you can download the binary from the Releases Tab.
+
 ## Usage
 
 Encode data by piping into the encode command:
